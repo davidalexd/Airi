@@ -141,14 +141,14 @@ def run_bot(argv=None):
     LLAMA_URL = os.getenv("LLAMA_URL", "http://127.0.0.1:8081").rstrip("/")
     BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
     NEKOSBEST_CONTACT = os.getenv("NEKOSBEST_CONTACT", "")
-    GIF_TIMEOUT = 10
-    REQUEST_TIMEOUT = 30
-    MAX_OUTPUT_TOKENS = 2048
-    MAX_WEB_RESULTS = 5
-    DATE_DELTA_MAX = 7
-    DEBOUNCE_SECONDS = 3
+    GIF_TIMEOUT = int(os.getenv("GIF_TIMEOUT", "20"))
+    REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "300"))
+    MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "2048"))
+    MAX_WEB_RESULTS = int(os.getenv("MAX_WEB_RESULTS", "5"))
+    DATE_DELTA_MAX = int(os.getenv("DATE_DELTA_MAX", "7"))
+    DEBOUNCE_SECONDS = float(os.getenv("DEBOUNCE_SECONDS", "3"))
     OWNER_ID = int(os.getenv("OWNER_ID", "0"))
-    CONFESS_THRESHOLD = 100
+    CONFESS_THRESHOLD = int(os.getenv("CONFESS_THRESHOLD", "100"))
 
     log = logging.getLogger(__name__)
 
