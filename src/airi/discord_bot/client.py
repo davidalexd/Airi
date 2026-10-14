@@ -116,6 +116,7 @@ def run_bot(argv=None):
     import logging
     import os
     import time
+    from io import BytesIO
 
     from dotenv import load_dotenv
 
@@ -124,10 +125,17 @@ def run_bot(argv=None):
     from airi.adapters.http_llm import HttpLlmClient
     from airi.adapters.nekosbest import NekosBestProvider
     from airi.config import Settings
+    from airi.discord_bot import embeds
     from airi.discord_bot import turn as discord_turn
     from airi.discord_bot.commands import build_registry
     from airi.discord_bot.context import BotContext
-    from airi.domain.affinity import apply_affinity_delta
+    from airi.domain.affinity import (
+        apply_affinity_delta,
+        apply_winner_lock,
+        maybe_crown_winner,
+    )
+    from airi.domain.gifs import ALLOWED_GIF_TYPES, GIF_EMOTION_TITLES
+    from airi.domain.texts import confession_text
     from airi.logging_setup import install_correlation_format
     from airi.observability.trace_store import TraceStore
     from airi.services.conversation import ConversationService
@@ -289,11 +297,70 @@ def run_bot(argv=None):
     def apply_affinity_change(uid, delta, *, now=None, delta_max=None):
         return state.apply_affinity(uid, delta, now=now, delta_max=delta_max)
 
+    def log_diary_event(kind, user, text):
+        log.info("%s %s: %s", kind, user, text)
+
+    async def send_selected_gif(session, channel, user, gif_type):
+        """Envía un GIF de NekosBest (usado para la confesión)."""
+        if gif_type == "none" or gif_type not in ALLOWED_GIF_TYPES:
+            return
+        log.info("El modelo ha seleccionado el GIF: %s", gif_type)
+        provider = NekosBestProvider(
+            session, contact=NEKOSBEST_CONTACT, timeout=GIF_TIMEOUT
+        )
+        gif_bytes = await provider.fetch(gif_type)
+        if not gif_bytes:
+            log.warning("No se encontró un GIF válido en NekosBest para %s", gif_type)
+            return
+        try:
+            filename = f"airi_{gif_type}.gif"
+            embed = discord.Embed(
+                title=GIF_EMOTION_TITLES.get(gif_type, "Airi"),
+                color=embeds.GIF_EMBED_COLOR,
+            )
+            if user is not None:
+                embed.set_footer(
+                    text=affinity_footer_text(user.id, user.display_name),
+                    icon_url=user.display_avatar.url,
+                )
+            embed.set_image(url=f"attachment://{filename}")
+            file = discord.File(BytesIO(gif_bytes), filename=filename)
+            await channel.send(embed=embed, file=file)
+            log.info("GIF enviado correctamente: %s", gif_type)
+        except discord.HTTPException:
+            log.exception("Discord no pudo enviar el GIF")
+
+    def user_display_name(user_id):
+        entry = users_data.get(str(user_id))
+        if isinstance(entry, dict) and entry.get("name"):
+            return str(entry["name"])
+        return "alguien"
+
     async def settle_relationship(channel, now, session=None, user=None):
         """Corona al ganador (confesión automática) y bloquea al resto."""
-        world_data["winner_id"] = session
-        world_data["relationship_started_at"] = now
-        save_world()
+        winner = maybe_crown_winner(world_data, affinity_data, now)
+        if winner:
+            apply_winner_lock(world_data, affinity_data)
+            save_world()
+            save_affinity()
+            await channel.send(confession_text(user_display_name(winner)))
+            log_diary_event(
+                "confession",
+                winner,
+                f"Me he dado cuenta de que quiero estar con "
+                f"{user_display_name(winner)}. ¡Hoy nos hemos hecho novios!",
+            )
+            log.info("¡Ganador coronado! %s es ahora pareja de Airi", winner)
+            if session is not None and user is not None and str(user.id) == str(winner):
+                try:
+                    await send_selected_gif(session, channel, user, "kiss")
+                except Exception:
+                    log.exception("No se pudo enviar el GIF de la confesión")
+            return winner
+        if world_data.get("winner_id"):
+            apply_winner_lock(world_data, affinity_data)
+            save_affinity()
+        return None
 
     def process_date_turn(date_session, user, decision, reason):
         if decision == "crisis":
