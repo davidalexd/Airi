@@ -127,6 +127,7 @@ def run_bot(argv=None):
     from airi.discord_bot import turn as discord_turn
     from airi.discord_bot.commands import build_registry
     from airi.discord_bot.context import BotContext
+    from airi.domain.affinity import apply_affinity_delta
     from airi.logging_setup import install_correlation_format
     from airi.observability.trace_store import TraceStore
     from airi.services.conversation import ConversationService
@@ -220,9 +221,9 @@ def run_bot(argv=None):
         save_memories=save_memories,
         save_users=save_users,
         log_diary_event=lambda kind, user, text: log.info("%s %s: %s", kind, user, text),
-        apply_affinity_fn=lambda uid, delta, now=None, delta_max=None: apply_affinity_change(
-            uid, delta, now=now, delta_max=delta_max
-        ),
+        apply_affinity_fn=lambda uid, delta, now=None, delta_max=None: (
+            lambda entry: apply_affinity_delta(entry, delta, now or time.time(), delta_max)
+        )(state.affinity_entry(uid)),
         traces=trace_store,
     )
 
