@@ -54,7 +54,7 @@ class HttpLlmClient:
             "stream": False,
         }
         if schema is not None:
-            payload["json_schema"] = schema
+            payload["response_format"] = {"type": "json_object"}
         data = await self.post(payload)
         choices = data.get("choices") or []
         if not choices:
