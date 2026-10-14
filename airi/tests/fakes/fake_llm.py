@@ -1,0 +1,70 @@
+"""Doble falso del puerto LLM: devuelve respuestas guionizadas."""
+
+from __future__ import annotations
+
+import json
+
+from airi.ports.llm import LLMMeta
+
+
+def llm_json(reply, **fields):
+    """Construye una respuesta JSON válida del modelo para tests."""
+    payload = {
+        "reply": reply,
+        "gif": "none",
+        "memory": "none",
+        "diary": "none",
+        "affinity_delta": 0,
+        "affinity_event": "none",
+        "date_decision": "continue",
+        "date_reason": "none",
+        "last_chance_result": "none",
+        "actions": [],
+    }
+    payload.update(fields)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+class FakeLLM:
+    """Implementa `airi.ports.llm.LLMClient` con una cola de respuestas."""
+
+    def __init__(self, replies=None, default_reply="{}"):
+        self.replies = list(replies or [])
+        self.default_reply = default_reply
+        self.calls = []  # dicts con messages/schema/max_tokens/temperature
+
+    async def chat(self, messages, *, schema=None, max_tokens=None, temperature=None):
+        content, _meta = await self.chat_with_meta(
+            messages, schema=schema, max_tokens=max_tokens, temperature=temperature
+        )
+        return content
+
+    async def chat_with_meta(self, messages, *, schema=None, max_tokens=None,
+                             temperature=None):
+        self.calls.append({
+            "messages": messages,
+            "schema": schema,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        })
+        if self.replies:
+            return self.replies.pop(0), LLMMeta(finish_reason="stop", usage={})
+        return self.default_reply, LLMMeta(finish_reason="stop", usage={})
+
+    @property
+    def last_system_prompt(self):
+        if not self.calls:
+            return ""
+        first = self.calls[-1]["messages"][0]
+        return first.get("content", "") if first.get("role") == "system" else ""
+
+    # ------------------------------------------------------------------
+    # Modo replay: devuelve raw_llm guardado sin parsing
+    # ------------------------------------------------------------------
+
+    def replay_from_raw(self, raw_string: str):
+        """Modo replay: la próxima llamada devuelve `raw_string` tal cual.
+
+        Útil para `airi.replay` que necesita la respuesta cruda del modelo.
+        """
+        self.replies = [raw_string]

@@ -1,0 +1,24 @@
+[project]
+name = "airi"
+version = "0.1.0"
+description = "Bot de Discord con LLM local (Airi) — arquitectura hexagonal"
+requires-python = ">=3.11"
+[project.scripts]
+airi-trace = "airi.observability.cli:main"
+airi-replay = "airi.replay:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# "." permite importar bot/game/date_view tal y como están hoy;
+# "src" habilita el paquete airi (src/ layout).
+pythonpath = [".", "src"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]

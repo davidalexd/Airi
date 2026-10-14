@@ -1,0 +1,78 @@
+"""Contexto de ejecución que la capa Discord recibe inyectado.
+
+El composition root (`bot.py`) construye un `BotContext` por mensaje/turno y lo
+pasa a los comandos y al traductor de turnos. Así la capa Discord no importa
+`bot` (evita ciclos) y los tests pueden construir un contexto con dobles.
+
+La mayor parte del estado vive en `AppState` (afinidad, mundo, citas, diario,
+memorias, usuarios, historiales + callbacks de persistencia). Aquí solo se
+añaden los "pegamentos" que resuelven globales de `bot.py` en tiempo de llamada
+(para que los monkeypatch de los tests sigan funcionando).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable
+
+from airi.services.state import AppState
+
+
+def _noop(*args, **kwargs):
+    return None
+
+
+def _noop_bool(*args, **kwargs) -> bool:
+    return False
+
+
+async def _anoop(*args, **kwargs):
+    return None
+
+
+@dataclass
+class BotContext:
+    channel_id: int
+    state: AppState
+    lock: Any = None
+    owner_id: int = 0
+    debounce_seconds: float = 2.5
+    request_timeout: int = 300
+    llama_url: str = "http://127.0.0.1:8081"
+    # Observabilidad (Fase 5): si `trace_dir` está definido, cada turno se
+    # guarda en `TRACE_DIR/YYYY-MM-DD/<cid>.json`. `trace_keep_raw=False`
+    # omite la respuesta cruda (la traza deja de ser reproducible).
+    trace_dir: str = ""
+    trace_keep_raw: bool = True
+
+    build_service: Callable[..., Any] = _noop
+    settle_relationship: Callable[..., Any] = _anoop
+    process_date_turn: Callable[..., Any] = _anoop
+    add_diary_reflection: Callable[..., Any] = _noop
+    send_long_message: Callable[..., Any] = _anoop
+    send_gif_bytes: Callable[..., Any] = _anoop
+    judge_gift: Callable[..., Any] = _anoop
+    propose_scenes: Callable[..., Any] = _anoop
+    reset_conversation: Callable[..., Any] = _noop
+    affinity_footer: Callable[..., str] = lambda user: ""
+    busy_date_owner: Callable[..., Any] = _noop
+    notify_busy: Callable[..., Any] = _anoop
+    date_busy_text: Callable[..., Any] = _noop
+    expire_stale_dates: Callable[..., Any] = _noop
+    handle_scene_choice: Callable[..., Any] = _anoop
+    handle_date_action: Callable[..., Any] = _anoop
+    log_diary_event: Callable[..., Any] = _noop_bool
+
+    def __post_init__(self):
+        # Última traza por (canal, usuario): para `!debug turno`.
+        self._last_traces = {}
+
+    def remember_trace(self, trace):
+        """Guarda la traza como "último turno" de su (canal, usuario)."""
+        if trace is None:
+            return
+        self._last_traces[(trace.channel_id, trace.user_id)] = trace
+
+    def last_trace_for(self, channel_id, user_id):
+        """Última traza de ese (canal, usuario), o None."""
+        return self._last_traces.get((str(channel_id), str(user_id)))

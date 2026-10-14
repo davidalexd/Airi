@@ -1,0 +1,16 @@
+{
+  "winner_id": "222",
+  "relationship_started_at": 1791957100.0861707,
+  "season": 1,
+  "preferences": {
+    "loves": [
+      "romantico",
+      "tierno"
+    ],
+    "dislikes": [
+      "grosero"
+    ],
+    "favorite_flower": "rosas",
+    "favorite_food": "ramen"
+  }
+}

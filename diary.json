@@ -1,0 +1,66 @@
+[
+  {
+    "ts": 1791934344.7461343,
+    "kind": "level",
+    "user_id": "563232759292624932",
+    "user_name": "KOKODA",
+    "text": "Empiezo a sentir algo más por KOKODA; nuestra relación ha subido a «Interés».",
+    "season": 1
+  },
+  {
+    "ts": 1791938536.8797839,
+    "kind": "date",
+    "user_id": "563232759292624932",
+    "user_name": "davidpg",
+    "text": "He tenido una cita con davidpg (un día en la playa). Ha sido un momento muy bonito.",
+    "season": 1
+  },
+  {
+    "ts": 1791938884.9802494,
+    "kind": "level",
+    "user_id": "418882638393376779",
+    "user_name": "JOAKO",
+    "text": "Empiezo a sentir algo más por JOAKO; nuestra relación ha subido a «Interés».",
+    "season": 1
+  },
+  {
+    "ts": 1791938884.978488,
+    "kind": "reflection",
+    "user_id": "418882638393376779",
+    "user_name": "JOAKO",
+    "text": "Me gustó cómo Joako me hizo sentir especial, aunque me puso nerviosa.",
+    "season": 1
+  },
+  {
+    "ts": 1791938888.2966561,
+    "kind": "date",
+    "user_id": "418882638393376779",
+    "user_name": "JOAKO",
+    "text": "He tenido una cita con JOAKO (una sesión de cine con palomitas). Ha sido un momento muy bonito.",
+    "season": 1
+  },
+  {
+    "ts": 1791946006.8883395,
+    "kind": "date",
+    "user_id": "563232759292624932",
+    "user_name": "davidpg",
+    "text": "Hoy la cita con davidpg (una cena a la luz de las velas) salió mal y no consiguió reconducirla. Me he quedado con el corazón encogido.",
+    "season": 1
+  },
+  {
+    "ts": 1791946003.7399218,
+    "kind": "reflection",
+    "user_id": "563232759292624932",
+    "user_name": "davidpg",
+    "text": "Me siento muy mal. No esperaba que me tratara así después de todo lo bonito que ha pasado hoy.",
+    "season": 1
+  },
+  {
+    "ts": 1791957101.5258865,
+    "kind": "confession",
+    "user_id": "222",
+    "user_name": "alguien",
+    "text": "Me he dado cuenta de que quiero estar con alguien. ¡Hoy nos hemos hecho novios!",
+    "season": 1
+  }
+]
