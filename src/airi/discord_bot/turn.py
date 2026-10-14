@@ -1,0 +1,304 @@
+"""Traducción de turnos de conversación/cita a mensajes de Discord.
+
+Contiene el antiguo `run_user_turn` y los callbacks de los botones de cita.
+No habla directamente con llama.cpp/Brave/NekosBest: usa el `ConversationService`
+que construye `ctx.build_service`. Toda la traducción a Discord (embeds, GIFs,
+botones) vive aquí.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import random
+import time
+import uuid
+from io import BytesIO
+
+import aiohttp
+import discord
+
+from airi.discord_bot import embeds
+from airi.discord_bot.views import date as date_views
+from airi.domain.affinity import can_date, entry_points
+from airi.domain.constants import DATE_COOLDOWN, DATE_SCENES
+from airi.domain.dates import (
+    date_expired,
+    date_seconds_left,
+    date_turns_left,
+    new_date_session,
+)
+from airi.domain.gifs import ALLOWED_GIF_TYPES, GIF_EMOTION_TITLES
+from airi.domain.text_filters import clean_reply
+from airi.domain.texts import date_intro
+from airi.observability.instrumentation import turn_event
+from airi.services.conversation import TurnContext
+
+log = logging.getLogger(__name__)
+
+
+async def send_long_message(channel, content):
+    """Envía un texto largo troceado en bloques de 2000 caracteres."""
+    content = clean_reply(content) or (
+        "Ehhh... no he conseguido preparar una respuesta esta vez."
+    )
+    while content:
+        chunk = content[:2000]
+        content = content[2000:]
+        await channel.send(chunk)
+
+
+async def send_gif_bytes(ctx, channel, user, gif_type, data):
+    """Envía el GIF obtenido (bytes) como embed con el pie de afinidad."""
+    if not data or gif_type == "none" or gif_type not in ALLOWED_GIF_TYPES:
+        return
+    log.info("El modelo ha seleccionado el GIF: %s", gif_type)
+    try:
+        filename = f"airi_{gif_type}.gif"
+        embed = discord.Embed(
+            title=GIF_EMOTION_TITLES.get(gif_type, "Airi"),
+            color=embeds.GIF_EMBED_COLOR,
+        )
+        if user is not None:
+            embed.set_footer(
+                text=ctx.affinity_footer(user),
+                icon_url=user.display_avatar.url,
+            )
+        embed.set_image(url=f"attachment://{filename}")
+        file = discord.File(BytesIO(data), filename=filename)
+        await channel.send(embed=embed, file=file)
+        log.info("GIF enviado correctamente: %s", gif_type)
+    except discord.HTTPException:
+        log.exception("Discord no pudo enviar el GIF")
+
+
+async def run_user_turn(
+    ctx,
+    channel,
+    author,
+    merged,
+    *,
+    allow_web=True,
+    reply_target=None,
+    kind="message",
+):
+    """Procesa un turno (texto libre o botón de cita) y lo traduce a Discord."""
+    channel_id = channel.id
+    author_id = author.id
+
+    async def _reply(text):
+        await channel.send(text, reference=reply_target, mention_author=False)
+
+    async with ctx.lock:
+        state = ctx.state
+        timeout = aiohttp.ClientTimeout(total=ctx.request_timeout)
+
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                service = ctx.build_service(session, state, channel)
+                merged_text = "\n".join(part for _, part in merged)
+
+                async with channel.typing():
+                    async with session.get(
+                        f"{ctx.llama_url}/health",
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as health:
+                        health.raise_for_status()
+
+                    cid = uuid.uuid4().hex[:12]
+                    collected = []
+                    result = await service.run_turn(
+                        author,
+                        merged,
+                        TurnContext(
+                            channel_id=channel_id,
+                            allow_web=allow_web,
+                            correlation_id=cid,
+                            kind=kind,
+                            on_trace=collected.append,
+                        ),
+                    )
+                    # La persistencia del evento la hace el servicio vía
+                    # `state.traces`; aquí solo guardamos el ring de !debug.
+                    ctx.remember_trace(collected[0] if collected else None)
+
+                if result.skipped:
+                    return
+                if not result.reply:
+                    await _reply(
+                        "Ehhh... no conseguí generar una respuesta final esta vez. "
+                        "¿Puedes intentarlo de nuevo?"
+                    )
+                    return
+
+                answer = result.reply
+                now = time.time()
+                uid = author_id
+                date_session = state.dates.get(str(uid))
+                in_date = result.in_date and isinstance(date_session, dict)
+
+                if in_date:
+                    embed = date_views.build_date_embed(
+                        answer,
+                        scene=date_session.get("scene"),
+                        state=date_session.get("state", "active"),
+                        turns_left=date_turns_left(date_session),
+                    )
+                    try:
+                        await channel.send(embed=embed)
+                    except discord.HTTPException:
+                        await send_long_message(channel, answer)
+                else:
+                    await send_long_message(channel, answer)
+                await send_gif_bytes(ctx, channel, author, result.gif, result.gif_bytes)
+
+                await ctx.settle_relationship(channel, now, session=session, user=author)
+
+                if in_date:
+                    date_event = await ctx.process_date_turn(
+                        channel,
+                        author,
+                        date_session,
+                        text=merged_text,
+                        delta=result.affinity_delta,
+                        points=state.entry_points(uid),
+                        date_decision=result.date_decision,
+                        date_reason=result.date_reason,
+                        last_chance_result=result.last_chance_result,
+                        now=now,
+                    )
+                    # El paso de cita ocurre fuera de `run_turn`; volcamos el
+                    # evento a la traza y la reescribimos para que el replay
+                    # pueda reproducirlo de forma fiel.
+                    if result.trace is not None:
+                        result.trace.date_event = date_event
+                        await state.traces.update(result.trace)
+                    if (
+                        date_event
+                        in (
+                            "ending",
+                            "recovered",
+                            "partial_recovery",
+                            "failed_last_chance",
+                        )
+                        and not result.diary_saved
+                        and result.diary_action.lower() != "none"
+                    ):
+                        ctx.add_diary_reflection(uid, result.diary_action, now=now)
+                    if date_event == "continue" and result.date_actions:
+                        remaining = int(date_seconds_left(date_session, now))
+                        view = date_views.DateChoiceView(
+                            uid,
+                            result.date_actions,
+                            ctx.handle_date_action,
+                            timeout=max(1, remaining),
+                        )
+                        await channel.send(
+                            embed=embeds.date_prompt_embed(date_views.DATE_EMBED_COLOR),
+                            view=view,
+                        )
+
+        except asyncio.TimeoutError:
+            log.warning("Tiempo de espera agotado")
+            await _reply(
+                "¡Ups! El modelo está tardando demasiado. "
+                "Inténtalo de nuevo en un momentito."
+            )
+        except aiohttp.ClientResponseError as exc:
+            log.exception("Un servicio HTTP devolvió un error: %s", exc.status)
+            await _reply(
+                "No pude completar la petición a un servicio. "
+                "Revisa los registros del bot."
+            )
+        except aiohttp.ClientError:
+            log.exception("Error comunicándose con un servicio HTTP")
+            await _reply(
+                "No puedo conectar con el modelo local o con un servicio necesario. "
+                "Comprueba que llama-server siga funcionando."
+            )
+        except (KeyError, IndexError, ValueError):
+            log.exception("Respuesta inesperada del modelo")
+            await _reply("El modelo devolvió una respuesta inesperada.")
+        except discord.HTTPException:
+            log.exception("Discord no pudo procesar el mensaje")
+        except Exception:
+            log.exception("Error procesando el mensaje")
+            await _reply("¡Ay! Ha ocurrido un error inesperado al responder.")
+
+
+async def handle_scene_choice(ctx, interaction, scene):
+    """Arranca la cita cuando el jugador elige (o sortea) una escena."""
+    user = interaction.user
+    uid = user.id
+    state = ctx.state
+    owner_id, owner_session = ctx.busy_date_owner(exclude_id=uid)
+    if owner_id is not None:
+        await interaction.followup.send(
+            ctx.date_busy_text(owner_id, owner_session), ephemeral=True
+        )
+        return
+    if str(uid) in state.dates:
+        await interaction.followup.send(
+            "¡Ya estáis en una cita! *se ríe* concéntrate en el momento~",
+            ephemeral=True,
+        )
+        return
+    entry = state.affinity_entry(uid)
+    points = entry_points(entry)
+    if not can_date(points):
+        await interaction.followup.send(
+            "Ehh... *se rasca la mejilla* todavía no te conozco lo suficiente "
+            "para una cita. Llega a ser mi **amiga** y te diré que sí, ¿vale?",
+            ephemeral=True,
+        )
+        return
+    now = time.time()
+    last_date = float(entry.get("last_date", 0.0) or 0.0)
+    if now - last_date < DATE_COOLDOWN:
+        remaining = int((DATE_COOLDOWN - (now - last_date)) // 3600)
+        await interaction.followup.send(
+            f"Airi ya ha salido contigo hace poco... dale un respiro "
+            f"(en ~{remaining} h).",
+            ephemeral=True,
+        )
+        return
+    if not scene:
+        scene = random.choice(DATE_SCENES)
+    async with turn_event(
+        state,
+        kind="scene_select",
+        user=user,
+        channel_id=getattr(interaction.channel, "id", ""),
+        raw_input=scene,
+    ):
+        state.dates[str(uid)] = new_date_session(scene, points, now)
+        entry["last_date"] = now
+        state.save_affinity()
+        state.save_dates()
+        await interaction.channel.send(date_intro(scene))
+
+
+async def handle_date_action(ctx, interaction, action_text):
+    """Ejecuta un turno de cita a partir de un botón de acción de Airi."""
+    user = interaction.user
+    uid = str(user.id)
+    state = ctx.state
+    session = state.dates.get(uid)
+    if not isinstance(session, dict) or session.get("state") == "closed":
+        await interaction.followup.send("Esa cita ya ha terminado~", ephemeral=True)
+        return
+    now = time.time()
+    if date_expired(session, now):
+        ctx.expire_stale_dates(now)
+        await interaction.followup.send("Esa cita ya ha terminado~", ephemeral=True)
+        return
+    if not action_text:
+        return
+    await run_user_turn(
+        ctx,
+        interaction.channel,
+        user,
+        [(user, action_text)],
+        allow_web=False,
+        kind="date_action",
+    )

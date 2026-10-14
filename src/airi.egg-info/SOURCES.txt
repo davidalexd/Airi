@@ -1,7 +1,0 @@
-README.md
-pyproject.toml
-src/airi.egg-info/PKG-INFO
-src/airi.egg-info/SOURCES.txt
-src/airi.egg-info/dependency_links.txt
-src/airi.egg-info/entry_points.txt
-src/airi.egg-info/top_level.txt

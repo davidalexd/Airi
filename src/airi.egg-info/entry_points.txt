@@ -1,3 +1,0 @@
-[console_scripts]
-airi-replay = airi.replay:main
-airi-trace = airi.observability.cli:main

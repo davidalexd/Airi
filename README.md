@@ -4,75 +4,97 @@
 
 ```text
 .
-├── bot.py              # Capa Discord fina: eventos, comandos, traducción a servicios
-├── game.py             # Shim de compatibilidad → airi.domain.*
-├── date_view.py        # Vistas/botones de cita (Discord)
-├── pyproject.toml      # Configuración (pytest pythonpath ".", "src", ruff)
+├── data/                              (JSON de datos + traces/)
 ├── src/airi/
-│   ├── domain/         # LÓGICA PURA (sin I/O, sin Discord, sin HTTP)
-│   │   ├── config.py       # env readers + constantes (afinidad, citas, diario)
-│   │   ├── affinity.py     # niveles, deltas, decay, clamp, coronación, ranking
-│   │   ├── dates.py        # máquina de estados de la cita
-│   │   ├── gifts.py        # catálogo y efectos de regalos
-│   │   ├── diary.py        # entradas, consultas, formato relativo
-│   │   ├── memories.py     # alta/olvido de memorias sobre listas
-│   │   ├── users.py        # registro de actividad (puro)
-│   │   ├── gifs.py         # tipos, categorías y títulos de GIFs
-│   │   ├── llm_output.py   # ModelOutput + parseo tolerante del LLM
-│   │   ├── text_filters.py # clean_reply, repeticiones del modelo
-│   │   ├── grounding.py    # filtro anti-alucinación
-│   │   ├── prompts.py      # prompts + build_system_prompt(ctx)
-│   │   ├── texts.py        # textos narrativos (cita, confesión, regalos)
-│   │   └── web.py          # detección de mensajes que piden búsqueda web
-│   ├── ports/          # Protocol (LLMClient, WebSearchClient, GifProvider,
-│   │                   # Notifier, Repository)
-│   ├── adapters/       # http_llm (llama.cpp), brave_search, nekosbest,
-│   │                   # json_repo + JSONRepository, discord_notifier
-│   └── services/       # Orquestación (solo usan ports)
-│       ├── state.py        # AppState: datos + callbacks de persistencia
-│       ├── conversation.py # ConversationService.run_turn(...) → TurnResult
-│       └── date_service.py # DateService: turno/cierre de citas
-│   ├── config.py       # Settings: ajustes de entorno (AIRI_TRACE_*), stdlib
-│   ├── observability/  # Trazas por turno + logging con correlation_id
-│   │   ├── trace.py        # TurnEvent (alias TurnTrace): campos + snapshots
-│   │   ├── trace_store.py  # TraceStore: ring en memoria + disco atómico
-│   │   ├── instrumentation.py # turn_event/traced: eventos fuera de run_turn
-│   │   └── logging_setup.py# CorrelationIdFilter + formato [cid=...]
-│   ├── trace.py        # CLI: `python -m airi.trace last/show`
-│   ├── replay.py       # `python -m airi.replay <traza>.json`
-│   └── discord_bot/    # Capa Discord fina (Fase 4)
-│       ├── client.py       # on_message: enrutar, debounce, delegar
-│       ├── context.py      # BotContext inyectado (+ trace_dir, last_traces)
-│       ├── turn.py         # run_user_turn: servicio → embeds/GIFs/vistas
-│       ├── embeds.py       # embeds y textos de ayuda
-│       ├── commands/       # un módulo por comando + registry
-│       └── views/          # botones de cita
-└── tests/
-    ├── unit/                   # unidades puras (sin red ni Discord)
-    │   ├── test_events.py      # TurnEvent: serialización, aliases v1, recortes
-    │   ├── test_trace_store.py # ring, disco atómico y fallos best-effort
-    │   └── test_conversation_instrumented.py  # el evento sobrevive a errores
-    ├── integration/            # ConversationService + citas + test_replay.py
-    ├── test_game.py, test_bot_integration.py  # herencia (siguen verdes)
-    ├── test_text_filters.py, test_grounding.py,
-    │   test_llm_output_parse.py, test_memories_domain.py  # caracterización
-    ├── test_observability.py  # instrumentación de run_turn + goldens de replay
-    ├── test_logging_setup.py  # formato [cid=...] + filtro anti-KeyError
-    ├── test_debug_command.py  # !debug ultimo/id/errores/clear + turno/trace
-    ├── test_instrumentation.py  # turn_event/traced (gift/command/scene_select)
-    ├── test_config.py         # Settings: AIRI_TRACE_* + fallback TRACE_*
-    ├── fakes/          # FakeLLM, FakeSearch, FakeGif, FakeNotifier, FakeUser,
-    │                   # InMemoryRepository + make_state()
-    └── fixtures/       # traces/example_bug.json + transcripts/*.jsonl
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── config.py                      (único config: Settings + env readers)
+│   ├── logging_setup.py
+│   ├── domain/                        (lógica pura: sin I/O, sin Discord, sin HTTP)
+│   │   ├── constants.py               # env_int, env_float + CONSTANTES (afinidad, citas, diario)
+│   │   ├── affinity.py                # niveles, deltas, decay, clamp, coronación, ranking
+│   │   ├── dates.py                   # máquina de estados de la cita
+│   │   ├── gifts.py                   # catálogo y efectos de regalos
+│   │   ├── diary.py                   # entradas, consultas, formato relativo
+│   │   ├── memories.py                # alta/olvido de memorias sobre listas
+│   │   ├── users.py                   # registro de actividad (puro)
+│   │   ├── gifs.py                    # tipos, categorías y títulos de GIFs
+│   │   ├── llm_output.py              # ModelOutput + parseo tolerante del LLM
+│   │   ├── text_filters.py            # clean_reply, repeticiones del modelo
+│   │   ├── grounding.py               # filtro anti-alucinación
+│   │   ├── prompts.py                 # prompts + build_system_prompt(ctx)
+│   │   ├── texts.py                   # textos narrativos (cita, confesión, regalos)
+│   │   └── web.py                     # detección de mensajes que piden búsqueda web
+│   ├── ports/                         # Protocol (LLMClient, WebSearchClient, GifProvider,
+│   │                               # Notifier, Repository)
+│   ├── adapters/                      # http_llm (llama.cpp), brave_search, nekosbest,
+│   │                               # json_repo + JSONRepository, discord_notifier
+│   ├── services/                      # Orquestación (solo usan ports)
+│   │   ├── state.py                   # AppState: datos + callbacks de persistencia
+│   │   ├── conversation.py            # ConversationService.run_turn(...) → TurnResult
+│   │   └── date_service.py            # DateService: turno/cierre de citas
+│   ├── discord_bot/                   # Capa Discord fina
+│   │   ├── client.py                  # on_message: enrutar, debounce, delegar
+│   │   ├── context.py                 # BotContext inyectado (+ trace_dir, last_traces)
+│   │   ├── turn.py                    # run_user_turn: servicio → embeds/GIFs/vistas
+│   │   ├── embeds.py                  # embeds y textos de ayuda
+│   │   ├── commands/                  # un módulo por comando + registry
+│   │   └── views/                     # botones de cita
+│   ├── observability/                 # Trazas por turno + logging con correlation_id
+│   │   ├── events.py                  # TurnEvent: campos + snapshots
+│   │   ├── trace_store.py             # TraceStore: ring en memoria + disco atómico
+│   │   ├── instrumentation.py         # turn_event/traced: eventos fuera de run_turn
+│   │   ├── replay.py                  # `airi-replay <traza>.json`
+│   │   ├── cli.py                     # `airi-trace last/show`
+│   │   └── trace.py                   # re-export barrel (compatibilidad)
+│   └── testing/                       🆕 (fakes compartidos con replay)
+│       ├── fake_llm.py                # FakeLLM, llm_json
+│       ├── in_memory_repo.py          # InMemoryRepository, make_state
+│       ├── fake_doubles.py            # FakeSearch, FakeGif, FakeNotifier, FakeUser
+│       └── __init__.py
+├── tests/
+│   ├── conftest.py
+│   ├── __init__.py
+│   ├── unit/                          # unidades puras (sin red ni Discord)
+│   │   ├── test_events.py             # TurnEvent: serialización, aliases v1, recortes
+│   │   ├── test_trace_store.py        # ring, disco atómico y fallos best-effort
+│   │   ├── test_config.py             # Settings: AIRI_TRACE_* + fallback TRACE_*
+│   │   ├── test_domain_edge_cases.py  # casos borde del dominio
+│   │   ├── test_memories_domain.py    # alta/olvido de memorias
+│   │   └── test_conversation_instrumented.py  # el evento sobrevive a errores
+│   ├── integration/                   # ConversationService + citas + replay
+│   │   ├── test_conversation_service.py
+│   │   ├── test_date_flow.py
+│   │   ├── test_replay.py
+│   │   ├── test_debug_command.py
+│   │   ├── test_observability.py
+│   │   └── test_conversation_instrumented.py
+│   ├── regression/                    # regresión por transcripts
+│   │   └── test_transcripts_regression.py
+│   ├── tools/                         # tests de herramientas
+│   │   └── test_coverage_tool.py
+│   ├── fakes/                         (solo re-exports de airi.testing)
+│   └── fixtures/
+│       ├── traces/                    (≥ 3 traces JSON)
+│       └── transcripts/               (goldens sintéticos .jsonl)
+├── tools/
+│   ├── coverage.py
+│   └── verify_migration.sh
+├── pyproject.toml
+├── README.md
+├── MIGRATION_NOTES.md
+├── .env / .env.example
+└── .gitignore
 ```
 
 ## Reglas
 
 - `domain/` no importa `discord`, `aiohttp` ni hace I/O de ficheros.
 - Los servicios orquestan con `ports`; nunca con `adapters` directamente.
-- `bot.py` construye `AppState` desde sus globales (`build_app_state()`) y
+- `src/airi/__main__.py` construye `AppState` desde sus globales (`build_app_state()`) y
   los servicios vía `build_conversation_service()` + `DateService`.
 - Los tests usan `asyncio.run()` (sin dependencias extra).
+- **Todo bug nuevo se convierte en:** un TurnEvent real → un .json en `tests/fixtures/traces/` → un test automático.
 
 ## Ejecutar tests
 
@@ -80,10 +102,12 @@
 .venv/bin/python -m pytest tests/
 ```
 
+Estado actual: **137 tests** en 4 carpetas (unit, integration, regression, tools).
+
 ## Ejecutar el bot
 
 ```bash
-.venv/bin/python bot.py   # necesita .env con DISCORD_TOKEN y CHANNEL_ID
+.venv/bin/python -m airi run   # necesita .env con DISCORD_TOKEN y CHANNEL_ID
 ```
 
 ## Debugging y trazas
@@ -127,20 +151,21 @@ TRACE_KEEP_LAST=500         # o AIRI_TRACE_KEEP_LAST
 - `!debug clear` (solo dueño): vacía el ring en memoria (no toca el disco).
 - `!debug turno` / `!debug trace` (solo dueño): resumen / JSON de tu último
   turno con Airi.
-- Inspeccionar trazas desde la terminal (lee `--dir`, `AIRI_TRACE_DIR` o
-  `TRACE_DIR`):
+
+### CLI de trazas
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m airi.trace last 10
-PYTHONPATH=src .venv/bin/python -m airi.trace show <cid>
+airi-trace last 10                    # resumen de los últimos 10 eventos
+airi-trace show <cid>                 # JSON completo de un correlation_id
 ```
 
-- Reproducir un turno sin Discord ni red:
+### Reproducir una traza
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m airi.replay ./traces/2026-10-14/<cid>.json
+airi-replay ./traces/2026-10-14/<cid>.json
 # exit 0 = la reproducción coincide; exit 1 = diverge o no es reproducible
-PYTHONPATH=src .venv/bin/python -m airi.replay --emit-test ./traces/.../<cid>.json
+
+airi-replay --emit-test ./traces/.../<cid>.json
 # genera tests/integration/test_regression_<cid>.py desde la traza
 ```
 
@@ -150,7 +175,7 @@ PYTHONPATH=src .venv/bin/python -m airi.replay --emit-test ./traces/.../<cid>.js
 
 `tests/fixtures/transcripts/*.jsonl` guardan conversaciones completas: por
 turno, el texto del usuario y la respuesta CRUDA del modelo. El runner
-(`tests/test_transcripts_regression.py`) las reinyecta con `FakeLLM` a través
+(`tests/regression/test_transcripts_regression.py`) las reinyecta con `FakeLLM` a través
 de `ConversationService`/`DateService` y compara contra las expectativas
 grabadas en el propio fichero (patrón auto-golden):
 
@@ -159,7 +184,7 @@ grabadas en el propio fichero (patrón auto-golden):
 - Si cambias comportamiento a propósito, regenera los goldens:
 
 ```bash
-RECORD_TRANSCRIPTS=1 .venv/bin/python -m pytest tests/test_transcripts_regression.py
+RECORD_TRANSCRIPTS=1 .venv/bin/python -m pytest tests/regression/test_transcripts_regression.py
 ```
 
 Transcripts incluidos: conversación normal, subida de nivel (Amiga) con
