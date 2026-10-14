@@ -106,9 +106,26 @@ Estado actual: **137 tests** en 4 carpetas (unit, integration, regression, tools
 
 ## Ejecutar el bot
 
+El bot se ejecuta como aplicación instalable con `pip install -e .`:
+
 ```bash
-.venv/bin/python -m airi run   # necesita .env con DISCORD_TOKEN y CHANNEL_ID
+pip install -e .                 # instala entry points: airi, airi-trace, airi-replay
+.venv/bin/airi run               # inicia el bot (necesita .env con DISCORD_TOKEN y CHANNEL_ID)
 ```
+
+Alternativamente, si no quieres instalar el paquete:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m airi run
+```
+
+Ambos métodos requieren un archivo `.env` con las variables de entorno:
+- `DISCORD_TOKEN`: token del bot de Discord
+- `CHANNEL_ID`: ID del canal autorizado
+- `LLAMA_URL`: URL del servidor llama.cpp (default: http://127.0.0.1:8081)
+- `DATA_DIR`: directorio de datos (default: data)
+- `TRACE_DIR`: directorio de trazas (opcional)
+- `OWNER_ID`: ID del dueño del bot (opcional)
 
 ## Debugging y trazas
 
