@@ -48,6 +48,7 @@ class HttpLlmClient:
     async def chat_with_meta(self, messages, *, schema=None, max_tokens=None,
                              temperature=None):
         payload = {
+            "model": "Qwen3.6-35B-A3B-MTP-UD-IQ3_S",
             "messages": messages,
             "max_tokens": max_tokens or self.max_output_tokens,
             "temperature": self.temperature if temperature is None else temperature,
