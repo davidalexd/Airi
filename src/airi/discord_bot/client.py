@@ -289,9 +289,10 @@ def run_bot(argv=None):
     def apply_affinity_change(uid, delta, *, now=None, delta_max=None):
         return state.apply_affinity(uid, delta, now=now, delta_max=delta_max)
 
-    def settle_relationship(uid, session):
-        world_data["winner_id"] = uid
-        world_data["relationship_started_at"] = session
+    async def settle_relationship(channel, now, session=None, user=None):
+        """Corona al ganador (confesión automática) y bloquea al resto."""
+        world_data["winner_id"] = session
+        world_data["relationship_started_at"] = now
         save_world()
 
     def process_date_turn(date_session, user, decision, reason):
