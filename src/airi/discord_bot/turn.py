@@ -106,7 +106,6 @@ async def run_user_turn(
                         health.raise_for_status()
 
                     cid = uuid.uuid4().hex[:12]
-                    collected = []
                     result = await service.run_turn(
                         author,
                         merged,
@@ -115,12 +114,9 @@ async def run_user_turn(
                             allow_web=allow_web,
                             correlation_id=cid,
                             kind=kind,
-                            on_trace=collected.append,
                         ),
                     )
-                    # La persistencia del evento la hace el servicio vía
-                    # `state.traces`; aquí solo guardamos el ring de !debug.
-                    ctx.remember_trace(collected[0] if collected else None)
+                    ctx.remember_trace(result.trace)
 
                 if result.skipped:
                     return
@@ -143,6 +139,7 @@ async def run_user_turn(
                         scene=date_session.get("scene"),
                         state=date_session.get("state", "active"),
                         turns_left=date_turns_left(date_session),
+                        seconds_left=date_seconds_left(date_session, now),
                     )
                     try:
                         await channel.send(embed=embed)

@@ -19,8 +19,18 @@ async def handle(ctx, message):
         entry["points"] = 0
         entry["milestones"] = []
     state.save_affinity()
+    # Los contadores de interacción se inyectan al prompt de Airi
+    # (`known_users_prompt_section`), lo que sesgaría la nueva temporada hacia
+    # quien más habló antes. Se reinician a 0 conservando nombre y fechas.
+    for entry in state.users.values():
+        if isinstance(entry, dict):
+            entry["interactions"] = 0
+    state.save_users()
     state.dates.clear()
     state.save_dates()
+    state.memories.clear()
+    state.save_memories()
+    state.histories.clear()
     state.diary.clear()
     state.save_diary()
     await message.channel.send(

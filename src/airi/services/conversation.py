@@ -21,10 +21,16 @@ from airi.domain.constants import (
     DATE_HISTORY_MAX,
     DIARY_REFLECTION_MIN_INTERVAL,
     MAX_HISTORY_MESSAGES,
+    SEARCH_QUERY_MAX_TOKENS,
 )
 from airi.domain.diary import add_diary_entry, new_diary_entry
 from airi.domain.grounding import reply_seems_grounded
-from airi.domain.llm_output import RESPONSE_SCHEMA, ModelOutput, parse_model_output
+from airi.domain.llm_output import (
+    RESPONSE_SCHEMA,
+    ModelOutput,
+    assistant_history_content,
+    parse_model_output,
+)
 from airi.domain.prompts import SEARCH_QUERY_PROMPT
 from airi.domain.text_filters import (
     clean_reply,
@@ -304,7 +310,10 @@ class ConversationService:
                     except Exception:
                         log.warning("No se pudo enviar el aviso de memoria guardada")
 
-            history.append({"role": "assistant", "content": answer})
+            history.append({
+                "role": "assistant",
+                "content": assistant_history_content(answer, output),
+            })
             if in_date and isinstance(date_session, dict):
                 date_session["history"] = history[-DATE_HISTORY_MAX:]
                 self.state.save_dates()
@@ -411,7 +420,21 @@ class ConversationService:
         system_prompt = domain_prompts.build_system_prompt(web_context, sections)
         messages = [{"role": "system", "content": system_prompt}, *history]
         if hasattr(self.llm, "chat_with_meta"):
-            raw, meta = await self.llm.chat_with_meta(messages, schema=RESPONSE_SCHEMA)
+            try:
+                # Salida estricta: la gramática del servidor garantiza JSON
+                # aunque el modelo quiera responder en texto plano.
+                raw, meta = await self.llm.chat_with_meta(
+                    messages, schema=RESPONSE_SCHEMA, strict_schema=True
+                )
+            except Exception:
+                log.warning(
+                    "La salida estricta no está soportada por el servidor; "
+                    "se reintenta en modo json_object.",
+                    exc_info=True,
+                )
+                raw, meta = await self.llm.chat_with_meta(
+                    messages, schema=RESPONSE_SCHEMA
+                )
         else:
             raw = await self.llm.chat(messages, schema=RESPONSE_SCHEMA)
             meta = LLMMeta()
@@ -443,7 +466,7 @@ class ConversationService:
                     {"role": "system", "content": SEARCH_QUERY_PROMPT},
                     {"role": "user", "content": user_message},
                 ],
-                max_tokens=64,
+                max_tokens=SEARCH_QUERY_MAX_TOKENS,
                 temperature=0.2,
             )
             query = content.strip().strip('"').strip("'").strip()

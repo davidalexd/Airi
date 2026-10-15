@@ -26,7 +26,7 @@ HELP_TEXT = (
     "**💗 Niveles**\n"
     "Desconocida → Conocida → Amiga → Interés → Enamorada → Novios\n\n"
 
-    "**🎮 Comandos**\n"
+    "**🎮 Comandos de usuario**\n"
     "• `!afinidad` — tus puntos y nivel\n"
     "• `!relacion` — vuestro estado (días juntos, etc.)\n"
     "• `!ranking` — quién va ganando\n"
@@ -38,9 +38,16 @@ HELP_TEXT = (
     "• `!memorias` / `!olvidar <número>` — ver o borrar sus recuerdos sobre ti\n"
     "• `!diario` — leer el diario de recuerdos de Airi\n"
     "• `!usuarios` — gente del canal\n"
-    "• `!reset` — reiniciar vuestra conversación\n"
-    "• `!reiniciar-temporada` — (admin) empezar una temporada nueva\n"
-    "• `!debug turno` / `!debug trace` — (dueño) inspeccionar el último turno\n\n"
+    "• `!reset` — reiniciar vuestra conversación\n\n"
+
+    "**🔧 Comandos de administrador**\n"
+    "• `!reiniciar-temporada` — nueva temporada: resetea afinidad, recuerdos, "
+    "diario y contadores de interacción\n"
+    "• `!debug turno` / `!debug trace` — inspeccionar el último turno\n"
+    "• `!debug ultimo [n]` — resumen de los últimos n eventos\n"
+    "• `!debug id <cid>` — JSON crudo del evento con ese correlation_id\n"
+    "• `!debug errores` — eventos recientes con errores\n"
+    "• `!debug clear` — vacía el ring de eventos en memoria\n\n"
 
     "**💡 Trucos**\n"
     "Descubre sus gustos (flor y comida favoritas) y acierta con los regalos. "
@@ -133,8 +140,7 @@ def scene_select_embed(color):
     return discord.Embed(
         title="🌹 ¿Adónde la llevas?",
         description=(
-            "Airi te mira con una sonrisa y te deja elegir el plan.\n"
-            "Pulsa una opción, o deja que ella decida por ti."
+            "👇 Elige un plan o déjate llevar por el azar."
         ),
         color=color,
     )
@@ -144,8 +150,7 @@ def date_prompt_embed(color):
     return discord.Embed(
         title="💭 ¿Qué haces?",
         description=(
-            "Elige una acción, o escribe con tus propias "
-            "palabras lo que quieras hacer~"
+            "👇 Elige una acción, o escribe con tus propias palabras lo que quieras hacer~"
         ),
         color=color,
     )

@@ -1,7 +1,9 @@
 """Tests de integración de ConversationService con fakes (sin red ni Discord)."""
 
 import asyncio
+import json
 
+from airi.domain.constants import SEARCH_QUERY_MAX_TOKENS
 from airi.domain.dates import new_date_session
 from airi.services.conversation import (
     GROUNDED_FALLBACK_TEXT,
@@ -52,7 +54,12 @@ def test_turn_replies_and_applies_affinity():
     # Usuario registrado e historial guardado.
     assert state.users["42"]["name"] == "David"
     assert counters["users"] == 1
-    assert state.histories[0][-1] == {"role": "assistant", "content": result.reply}
+    # El historial de asistente se guarda SIEMPRE como JSON (formato de salida).
+    entry = state.histories[0][-1]
+    assert entry["role"] == "assistant"
+    payload = json.loads(entry["content"])
+    assert payload["reply"] == result.reply
+    assert payload["affinity_delta"] == 2
 
 
 def test_turn_invalid_json_recovers_raw_reply():
@@ -94,6 +101,90 @@ def test_turn_duplicate_answer_is_skipped():
     assert len(state.histories[0]) == 2
     assert state.histories[0][-1] == {
         "role": "assistant", "content": "Ya te dije hola antes"}
+
+
+# ---------------------------------------------------------------------------
+# Salida estructurada estricta (json_schema) con fallback
+# ---------------------------------------------------------------------------
+
+
+def test_turn_uses_strict_json_schema():
+    """El turno principal pide JSON estricto al servidor (gramática)."""
+    state, _ = make_state()
+    llm = FakeLLM(replies=[llm_json("hola")])
+    svc = make_service(llm, state, notifier=FakeNotifier())
+
+    run(svc.run_turn(DAVID, [(DAVID, "hola")], TurnContext()))
+
+    assert llm.calls[-1]["strict_schema"] is True
+    assert llm.calls[-1]["schema"] is not None
+
+
+def test_turn_falls_back_when_strict_schema_unsupported():
+    """Si el servidor rechaza la salida estricta, se reintenta en modo clásico."""
+    state, _ = make_state()
+    llm = FakeLLM(
+        replies=[llm_json("hola tras el fallback")],
+        strict_error=RuntimeError("400 Bad Request: json_schema"),
+    )
+    svc = make_service(llm, state, notifier=FakeNotifier())
+
+    result = run(svc.run_turn(DAVID, [(DAVID, "hola")], TurnContext()))
+
+    assert result.reply == "hola tras el fallback"
+    assert len(llm.calls) == 2
+    assert llm.calls[0]["strict_schema"] is True
+    assert llm.calls[1]["strict_schema"] is False
+
+
+# ---------------------------------------------------------------------------
+# Historial de asistente en JSON (refuerzo del formato de salida)
+# ---------------------------------------------------------------------------
+
+
+def test_history_stores_plain_fallback_as_json():
+    """Aunque el modelo se salga del JSON, el historial se guarda como JSON."""
+    state, _ = make_state()
+    llm = FakeLLM(replies=["hola sin json por parte del modelo"])
+    svc = make_service(llm, state, notifier=FakeNotifier())
+
+    result = run(svc.run_turn(DAVID, [(DAVID, "hola")], TurnContext()))
+
+    entry = state.histories[0][-1]
+    payload = json.loads(entry["content"])
+    assert payload["reply"] == result.reply
+    assert payload["gif"] == "none"
+
+
+def test_duplicate_detection_works_with_json_history():
+    """El filtro de duplicados extrae el reply del historial JSON."""
+    state, _ = make_state()
+    state.histories[0] = [
+        {"role": "user", "content": "David: hola"},
+        {"role": "assistant", "content": llm_json("Ya te dije hola antes")},
+    ]
+    llm = FakeLLM(replies=[llm_json("Ya te dije hola antes")])
+    svc = make_service(llm, state, notifier=FakeNotifier())
+
+    result = run(svc.run_turn(DAVID, [(DAVID, "hola")], TurnContext()))
+
+    assert result.skipped is True
+    assert result.reply is None
+
+
+def test_history_keeps_plain_legacy_entries_working():
+    """Las entradas antiguas en texto plano siguen comparándose correctamente."""
+    state, _ = make_state()
+    state.histories[0] = [
+        {"role": "user", "content": "David: hola"},
+        {"role": "assistant", "content": "Ya te dije hola antes"},
+    ]
+    llm = FakeLLM(replies=[llm_json("Ya te dije hola antes")])
+    svc = make_service(llm, state, notifier=FakeNotifier())
+
+    result = run(svc.run_turn(DAVID, [(DAVID, "hola")], TurnContext()))
+
+    assert result.skipped is True
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +268,8 @@ def test_turn_web_search_reformulates_and_uses_context():
     assert result.web_context is not None
     # El prompt de la llamada principal incluye el contexto web.
     assert "=== RESULTADOS DE BÚSQUEDA ===" in llm.last_system_prompt
+    # La primera llamada (reformulación de búsqueda) respeta SEARCH_QUERY_MAX_TOKENS.
+    assert llm.calls[0]["max_tokens"] == SEARCH_QUERY_MAX_TOKENS
 
 
 def test_turn_web_search_failure_sets_honest_context():

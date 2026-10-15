@@ -26,27 +26,40 @@ def llm_json(reply, **fields):
 
 
 class FakeLLM:
-    """Implementa `airi.ports.llm.LLMClient` con una cola de respuestas."""
+    """Implementa `airi.ports.llm.LLMClient` con una cola de respuestas.
 
-    def __init__(self, replies=None, default_reply="{}"):
+    `strict_error` (si se pasa) se lanza en las llamadas con `strict_schema=True`
+    para simular un servidor que no soporta salida estructurada estricta.
+    """
+
+    def __init__(self, replies=None, default_reply="{}", strict_error=None):
         self.replies = list(replies or [])
         self.default_reply = default_reply
-        self.calls = []  # dicts con messages/schema/max_tokens/temperature
+        self.strict_error = strict_error
+        self.calls = []  # dicts con messages/schema/max_tokens/temperature/...
 
-    async def chat(self, messages, *, schema=None, max_tokens=None, temperature=None):
+    async def chat(self, messages, *, schema=None, max_tokens=None,
+                   temperature=None, disable_thinking=False, strict_schema=False):
         content, _meta = await self.chat_with_meta(
-            messages, schema=schema, max_tokens=max_tokens, temperature=temperature
+            messages, schema=schema, max_tokens=max_tokens,
+            temperature=temperature, disable_thinking=disable_thinking,
+            strict_schema=strict_schema,
         )
         return content
 
     async def chat_with_meta(self, messages, *, schema=None, max_tokens=None,
-                             temperature=None):
+                             temperature=None, disable_thinking=False,
+                             strict_schema=False):
         self.calls.append({
             "messages": messages,
             "schema": schema,
             "max_tokens": max_tokens,
             "temperature": temperature,
+            "disable_thinking": disable_thinking,
+            "strict_schema": strict_schema,
         })
+        if strict_schema and self.strict_error is not None:
+            raise self.strict_error
         if self.replies:
             return self.replies.pop(0), LLMMeta(finish_reason="stop", usage={})
         return self.default_reply, LLMMeta(finish_reason="stop", usage={})

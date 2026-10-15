@@ -63,16 +63,16 @@ class BotContext:
     handle_date_action: Callable[..., Any] = _anoop
     log_diary_event: Callable[..., Any] = _noop_bool
 
-    def __post_init__(self):
-        # Última traza por (canal, usuario): para `!debug turno`.
-        self._last_traces = {}
-
     def remember_trace(self, trace):
-        """Guarda la traza como "último turno" de su (canal, usuario)."""
-        if trace is None:
+        """Persiste la traza en el TraceStore compartido (cross-message)."""
+        if trace is None or self.state.traces is None:
             return
-        self._last_traces[(trace.channel_id, trace.user_id)] = trace
+        self.state.traces._ring.append(trace)
 
     def last_trace_for(self, channel_id, user_id):
-        """Última traza de ese (canal, usuario), o None."""
-        return self._last_traces.get((str(channel_id), str(user_id)))
+        """Última traza de ese (canal, usuario) en el TraceStore compartido."""
+        cid, uid = str(channel_id), str(user_id)
+        for ev in self.state.traces.all():
+            if str(ev.channel_id) == cid and str(ev.user_id) == uid:
+                return ev
+        return None

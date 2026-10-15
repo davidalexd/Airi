@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Callable
 
 from airi.domain.affinity import (
     AFFINITY_DELTA_MAX,
@@ -13,16 +13,13 @@ from airi.domain.affinity import (
 from airi.domain.affinity import (
     entry_points as _entry_points,
 )
+from airi.domain.diary import add_diary_entry, new_diary_entry
 from airi.domain.memories import user_memories as _user_memories
 from airi.observability.trace_store import TraceStore
 
 
 def _noop(*args, **kwargs):
     return None
-
-
-def _noop_bool(*args, **kwargs) -> bool:
-    return False
 
 
 def _default_trace_store() -> TraceStore:
@@ -52,7 +49,6 @@ class AppState:
     save_memories: Callable[[], None] = _noop
     save_diary: Callable[[], None] = _noop
     save_users: Callable[[], None] = _noop
-    log_diary_event: Callable[[str, Any, str], bool] = _noop_bool
     # Hook opcional para aplicar afinidad vía la fachada externa (bot.py),
     # de modo que se mantengan sus logs y sea monkeypatchable en tests.
     apply_affinity_fn: Callable[..., int] | None = None
@@ -86,6 +82,36 @@ class AppState:
         applied = apply_affinity_delta(entry, delta, now, delta_max=delta_max)
         self.save_affinity()
         return applied
+
+    # ------------------------------------------------------------------
+    # Diario
+    # ------------------------------------------------------------------
+
+    def log_diary_event(self, kind, user, text, *, now=None) -> bool:
+        """Añade una entrada al diario y la persiste. Devuelve si se guardó.
+
+        `user` puede ser un id plano o un objeto con `.id`; el nombre se
+        resuelve en tiempo de llamada (tras `register_activity`).
+        """
+        if not text:
+            return False
+        if now is None:
+            import time as _time
+
+            now = _time.time()
+        uid = getattr(user, "id", user)
+        entry = new_diary_entry(
+            kind,
+            uid,
+            self.display_name(uid),
+            text,
+            now,
+            season=int((self.world or {}).get("season", 1) or 1),
+        )
+        if add_diary_entry(self.diary, entry):
+            self.save_diary()
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Memorias

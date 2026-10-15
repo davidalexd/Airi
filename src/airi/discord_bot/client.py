@@ -10,10 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
+import time
+from types import SimpleNamespace
 
 import discord
 
 from airi.discord_bot import turn
+from airi.domain.constants import DATE_DELTA_MAX
 
 log = logging.getLogger(__name__)
 
@@ -106,6 +110,317 @@ def create_client(*, build_ctx, registry, channel_id):
     return client
 
 
+def build_date_glue(state, *, llm_url, request_timeout):
+    """Pegamentos Discord↔dominio para citas, regalos y diario.
+
+    Devuelve un `SimpleNamespace` con los callables que `BotContext` inyecta.
+    Vive fuera de `run_bot` para poder testearlo sin levantar el bot (basta un
+    `AppState` y, para las llamadas al modelo, un `session` doble).
+
+    La migración hexagonal dejó estos métodos como stubs vacíos en `run_bot`,
+    lo que rompía `!cita` (TypeError por firma) y `!regalo`.
+    """
+    from airi.adapters.discord_notifier import DiscordNotifier
+    from airi.adapters.http_llm import HttpLlmClient
+    from airi.domain.affinity import affinity_level, affinity_summary, clamp_delta
+    from airi.domain.constants import (
+        DATE_BUSY_NOTICE_COOLDOWN,
+        DATE_SCENE_MAX_TOKENS,
+        DATE_SCENES,
+        DIARY_REFLECTION_MIN_INTERVAL,
+    )
+    from airi.domain.dates import date_expired, date_seconds_left
+    from airi.domain.diary import add_diary_entry, new_diary_entry
+    from airi.domain.llm_output import extract_json_object, parse_scene_list
+    from airi.domain.prompts import (
+        GIFT_JUDGE_PROMPT,
+        GIFT_JUDGE_SCHEMA,
+        SCENE_PROPOSAL_PROMPT,
+        SCENE_PROPOSAL_SCHEMA,
+        SYSTEM_PROMPT,
+        affinity_prompt_section,
+        preferences_prompt_section,
+        relationship_status_section,
+    )
+    from airi.domain.text_filters import clean_reply
+    from airi.services.date_service import DateService
+
+    busy_notice_at = {}  # uid -> timestamp del último aviso (anti-spam).
+
+    async def request_llama(session, messages, *, schema, max_tokens=None, temperature):
+        llm = HttpLlmClient(
+            llm_url,
+            session,
+            timeout=request_timeout,
+        )
+        text, _meta = await llm.chat_with_meta(
+            messages,
+            schema=schema,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            disable_thinking=True,
+            strict_schema=True,
+        )
+        return text
+
+    def fallback_scenes():
+        """Escenas de reserva si el modelo no responde bien."""
+        count = min(3, len(DATE_SCENES))
+        return random.sample(list(DATE_SCENES), k=count)
+
+    async def propose_scenes(session, user=None):
+        """Pide a la IA 3-4 planes de cita; si falla, usa escenas de reserva."""
+        who = state.display_name(user.id) if user is not None else "esa persona"
+        messages = [
+            {"role": "system", "content": SCENE_PROPOSAL_PROMPT},
+            {"role": "user", "content": f"Propón planes de cita con {who}."},
+        ]
+        try:
+            raw = await request_llama(
+                session,
+                messages,
+                schema=SCENE_PROPOSAL_SCHEMA,
+                max_tokens=DATE_SCENE_MAX_TOKENS,
+                temperature=0.9,
+            )
+            parsed = extract_json_object(raw) if isinstance(raw, str) else None
+            scenes = (
+                parse_scene_list(parsed.get("scenes"))
+                if isinstance(parsed, dict)
+                else []
+            )
+            if scenes:
+                return scenes
+            log.warning(
+                "El modelo no devolvió escenas válidas; uso escenas de reserva"
+            )
+        except Exception:
+            log.exception("Error proponiendo escenas; uso escenas de reserva")
+        return fallback_scenes()
+
+    async def judge_gift(session, item, user, recent_gifts=None):
+        """Airi juzga un regalo: su reacción y cuánta afinidad le llega.
+
+        Devuelve (reply, delta, event) o None si el modelo falla. `delta` ya
+        viene con el candado aplicado (0 si Airi no declara motivo).
+        """
+        uid = user.id if user is not None else None
+        display = state.display_name(uid) if uid is not None else "Alguien"
+        points = state.entry_points(uid) if uid is not None else 0
+        level_name = affinity_level(points)[0]
+        affinity_desc = affinity_prompt_section(points, level_name, display)
+        relationship_desc = relationship_status_section(
+            state.world,
+            state.users,
+            user_id=uid,
+            display_name=display,
+            now=time.time(),
+        )
+        prefs_desc = preferences_prompt_section(state.world)
+        recent = [str(g) for g in (recent_gifts or [])]
+        recent_desc = ", ".join(recent) if recent else "(ninguno)"
+        system_prompt = (
+            SYSTEM_PROMPT
+            + affinity_desc
+            + relationship_desc
+            + prefs_desc
+            + GIFT_JUDGE_PROMPT
+        )
+        user_message = (
+            f"{display} te acaba de regalar «{item}». "
+            f"Regalos recientes que ya te ha hecho: {recent_desc}. "
+            "Reacciona como Airi y decide, con tu criterio, si el regalo mueve tu "
+            "afinidad y cuánto."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ]
+        try:
+            raw = await request_llama(
+                session,
+                messages,
+                schema=GIFT_JUDGE_SCHEMA,
+                temperature=0.7,
+            )
+        except Exception:
+            log.exception("No se pudo consultar a Airi sobre el regalo")
+            return None
+        parsed = extract_json_object(raw) if isinstance(raw, str) else None
+        if not isinstance(parsed, dict):
+            return None
+
+        reply_raw = parsed.get("reply")
+        reply = clean_reply(reply_raw) if isinstance(reply_raw, str) else ""
+        delta_raw = parsed.get("affinity_delta", 0)
+        if isinstance(delta_raw, bool) or not isinstance(delta_raw, (int, float)):
+            delta = 0
+        else:
+            delta = int(delta_raw)
+        delta = clamp_delta(delta)
+        event_raw = parsed.get("affinity_event", "none")
+        event = event_raw.strip()[:300] if isinstance(event_raw, str) else "none"
+        if event.lower() in ("", "none", "ninguno", "null"):
+            delta = 0
+        log.info(
+            "Airi juzga el regalo «%s»: delta %+d (motivo: %s)", item, delta, event
+        )
+        return reply, delta, event
+
+    async def process_date_turn(
+        channel,
+        user,
+        date_session,
+        *,
+        text,
+        delta,
+        points,
+        date_decision,
+        date_reason,
+        last_chance_result,
+        now,
+    ):
+        """Avanza un turno de la cita y cierra si toca.
+
+        Devuelve el evento del turno (ver airi.domain.dates.step_date). La
+        lógica vive en `airi.services.date_service.DateService`.
+        """
+        service = DateService(state=state, notifier=DiscordNotifier(channel))
+        return await service.process_turn(
+            date_session,
+            user=user,
+            text=text,
+            delta=delta,
+            points=points,
+            date_decision=date_decision,
+            date_reason=date_reason,
+            last_chance_result=last_chance_result,
+            now=now,
+        )
+
+    def _finish_date(user_id, session, event, *, now):
+        """Cierra la cita: registra el resultado en el diario y la elimina."""
+        DateService(state=state).finish_date(user_id, session, event, now=now)
+
+    def expire_stale_dates(now=None):
+        """Cierra las citas que superaron su duración máxima.
+
+        Devuelve la lista de uids cerrados. Se llama al principio de
+        `on_message` para que una cita abandonada nunca bloquee el canal.
+        """
+        if now is None:
+            now = time.time()
+        expired = []
+        for uid, session in list(state.dates.items()):
+            if date_expired(session, now):
+                expired.append(uid)
+                _finish_date(uid, session, "ending", now=now)
+        if expired:
+            log.info("Citas caducadas por tiempo: %s", ", ".join(expired))
+        return expired
+
+    def busy_date_owner(exclude_id=None):
+        """Devuelve (uid, session) de la cita activa de OTRO usuario.
+
+        Antes de buscar, expira las citas caducadas para no bloquear el canal.
+        """
+        expire_stale_dates()
+        exclude = None if exclude_id is None else str(exclude_id)
+        for uid, session in state.dates.items():
+            if not isinstance(session, dict):
+                continue
+            if session.get("state") == "closed":
+                continue
+            if exclude is not None and str(uid) == exclude:
+                continue
+            return str(uid), session
+        return None, None
+
+    def date_busy_text(owner_id, owner_session, now=None):
+        """Mensaje de sistema que anuncia que Airi está en una cita."""
+        if now is None:
+            now = time.time()
+        name = state.display_name(owner_id)
+        seconds = date_seconds_left(owner_session, now)
+        if seconds < 60:
+            when = "en menos de 1 min"
+        else:
+            when = f"en ~{int((seconds + 59) // 60)} min"
+        return (
+            f"🌸 **Airi está en una cita ahora mismo.** Está con **{name}**. "
+            f"Su cita termina {when}. Vuelve un poco más tarde para hablar con ella~"
+        )
+
+    async def notify_busy(channel, user, now=None):
+        """Avisa de que Airi está ocupada, respetando un cooldown por usuario."""
+        if now is None:
+            now = time.time()
+        uid = user.id
+        last = busy_notice_at.get(uid, 0.0)
+        if now - last < DATE_BUSY_NOTICE_COOLDOWN:
+            return
+        busy_notice_at[uid] = now
+        owner_id, session = busy_date_owner(exclude_id=uid)
+        if owner_id is None:
+            return
+        await channel.send(date_busy_text(owner_id, session, now))
+
+    def add_diary_reflection(
+        user_id, text, now=None, min_interval=DIARY_REFLECTION_MIN_INTERVAL
+    ):
+        """Guarda una reflexión de Airi en 1ª persona. Devuelve True si se guardó."""
+        text = clean_reply(text).strip()[:200].strip()
+        if not text:
+            return False
+        key = str(user_id)
+        recent = [
+            e
+            for e in state.diary[-20:]
+            if isinstance(e, dict)
+            and e.get("kind") == "reflection"
+            and str(e.get("user_id")) == key
+        ]
+        lower = text.lower()
+        if any(lower == str(e.get("text", "")).lower() for e in recent):
+            log.info("Reflexión duplicada descartada para %s", user_id)
+            return False
+        now = time.time() if now is None else now
+        if recent and now - float(recent[-1].get("ts", 0.0) or 0.0) < min_interval:
+            return False
+        entry = new_diary_entry(
+            "reflection",
+            user_id,
+            state.display_name(user_id),
+            text,
+            now,
+            season=int(state.world.get("season", 1) or 1),
+        )
+        if add_diary_entry(state.diary, entry):
+            state.save_diary()
+            log.info("Reflexión guardada para %s: %r", user_id, text)
+            return True
+        return False
+
+    def affinity_footer_text(user_id, display_name):
+        points, level_name, progress = affinity_summary(state.entry_points(user_id))
+        return (
+            f"💛 Afinidad de {display_name}: {points} pts · "
+            f"{level_name} · {progress}"
+        )
+
+    return SimpleNamespace(
+        propose_scenes=propose_scenes,
+        judge_gift=judge_gift,
+        process_date_turn=process_date_turn,
+        busy_date_owner=busy_date_owner,
+        notify_busy=notify_busy,
+        date_busy_text=date_busy_text,
+        expire_stale_dates=expire_stale_dates,
+        add_diary_reflection=add_diary_reflection,
+        affinity_footer_text=affinity_footer_text,
+    )
+
+
 def run_bot(argv=None):
     """Inicia el bot de Discord.
 
@@ -115,7 +430,6 @@ def run_bot(argv=None):
     import json
     import logging
     import os
-    import time
     from io import BytesIO
 
     from dotenv import load_dotenv
@@ -143,6 +457,8 @@ def run_bot(argv=None):
 
     load_dotenv()
 
+    log = logging.getLogger(__name__)
+
     # Configuración
     TOKEN = os.getenv("DISCORD_TOKEN")
     CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
@@ -150,15 +466,15 @@ def run_bot(argv=None):
     BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
     NEKOSBEST_CONTACT = os.getenv("NEKOSBEST_CONTACT", "")
     GIF_TIMEOUT = int(os.getenv("GIF_TIMEOUT", "20"))
-    REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "300"))
-    MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "2048"))
+    try:
+        REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "300"))
+    except (ValueError, TypeError):
+        log.warning("REQUEST_TIMEOUT tiene valor inválido, usando 300")
+        REQUEST_TIMEOUT = 300
     MAX_WEB_RESULTS = int(os.getenv("MAX_WEB_RESULTS", "5"))
-    DATE_DELTA_MAX = int(os.getenv("DATE_DELTA_MAX", "7"))
     DEBOUNCE_SECONDS = float(os.getenv("DEBOUNCE_SECONDS", "3"))
     OWNER_ID = int(os.getenv("OWNER_ID", "0"))
     CONFESS_THRESHOLD = int(os.getenv("CONFESS_THRESHOLD", "100"))
-
-    log = logging.getLogger(__name__)
 
     # Datos globales
     generation_lock = asyncio.Lock()
@@ -228,11 +544,17 @@ def run_bot(argv=None):
         save_diary=save_diary,
         save_memories=save_memories,
         save_users=save_users,
-        log_diary_event=lambda kind, user, text: log.info("%s %s: %s", kind, user, text),
         apply_affinity_fn=lambda uid, delta, now=None, delta_max=None: (
             lambda entry: apply_affinity_delta(entry, delta, now or time.time(), delta_max)
         )(state.affinity_entry(uid)),
         traces=trace_store,
+    )
+
+    # Pegamentos Discord↔dominio (citas, regalos, diario). Ver `build_date_glue`.
+    glue = build_date_glue(
+        state,
+        llm_url=LLAMA_URL,
+        request_timeout=REQUEST_TIMEOUT,
     )
 
     def build_app_state():
@@ -244,7 +566,6 @@ def run_bot(argv=None):
                 LLAMA_URL,
                 session,
                 timeout=REQUEST_TIMEOUT,
-                max_output_tokens=MAX_OUTPUT_TOKENS,
             ),
             state=state,
             search=BraveSearchClient(BRAVE_API_KEY, session, max_results=MAX_WEB_RESULTS),
@@ -267,18 +588,18 @@ def run_bot(argv=None):
             trace_keep_raw=True,
             build_service=build_conversation_service,
             settle_relationship=settle_relationship,
-            process_date_turn=process_date_turn,
-            add_diary_reflection=add_diary_reflection,
-            judge_gift=judge_gift,
-            propose_scenes=propose_scenes,
-            busy_date_owner=busy_date_owner,
-            notify_busy=notify_busy,
-            date_busy_text=date_busy_text,
-            expire_stale_dates=expire_stale_dates,
-            affinity_footer=lambda user: affinity_footer_text(
+            process_date_turn=glue.process_date_turn,
+            add_diary_reflection=glue.add_diary_reflection,
+            judge_gift=glue.judge_gift,
+            propose_scenes=glue.propose_scenes,
+            busy_date_owner=glue.busy_date_owner,
+            notify_busy=glue.notify_busy,
+            date_busy_text=glue.date_busy_text,
+            expire_stale_dates=glue.expire_stale_dates,
+            affinity_footer=lambda user: glue.affinity_footer_text(
                 user.id, user.display_name
             ),
-            log_diary_event=lambda kind, user, text: log.info("%s %s: %s", kind, user, text),
+            log_diary_event=state.log_diary_event,
         )
         ctx.handle_scene_choice = (
             lambda interaction, payload: discord_turn.handle_scene_choice(
@@ -296,9 +617,6 @@ def run_bot(argv=None):
 
     def apply_affinity_change(uid, delta, *, now=None, delta_max=None):
         return state.apply_affinity(uid, delta, now=now, delta_max=delta_max)
-
-    def log_diary_event(kind, user, text):
-        log.info("%s %s: %s", kind, user, text)
 
     async def send_selected_gif(session, channel, user, gif_type):
         """Envía un GIF de NekosBest (usado para la confesión)."""
@@ -320,7 +638,7 @@ def run_bot(argv=None):
             )
             if user is not None:
                 embed.set_footer(
-                    text=affinity_footer_text(user.id, user.display_name),
+                    text=glue.affinity_footer_text(user.id, user.display_name),
                     icon_url=user.display_avatar.url,
                 )
             embed.set_image(url=f"attachment://{filename}")
@@ -344,7 +662,7 @@ def run_bot(argv=None):
             save_world()
             save_affinity()
             await channel.send(confession_text(user_display_name(winner)))
-            log_diary_event(
+            state.log_diary_event(
                 "confession",
                 winner,
                 f"Me he dado cuenta de que quiero estar con "
@@ -361,37 +679,6 @@ def run_bot(argv=None):
             apply_winner_lock(world_data, affinity_data)
             save_affinity()
         return None
-
-    def process_date_turn(date_session, user, decision, reason):
-        if decision == "crisis":
-            pass
-        elif decision == "end":
-            pass
-        save_dates()
-
-    def add_diary_reflection(user_id, text, now):
-        save_diary()
-
-    def judge_gift(user_id, gift_type, now):
-        pass
-
-    def propose_scenes(user_id, scene_list, now):
-        pass
-
-    def busy_date_owner(exclude_id=None):
-        return None, None
-
-    def notify_busy(channel, user):
-        pass
-
-    def date_busy_text():
-        return ""
-
-    def expire_stale_dates():
-        return False
-
-    def affinity_footer_text(user_id, display_name):
-        return ""
 
     client = create_client(build_ctx=build_ctx, registry=registry, channel_id=CHANNEL_ID)
 

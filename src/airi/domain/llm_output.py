@@ -92,6 +92,48 @@ def _model_output(
     )
 
 
+def assistant_history_content(answer, output=None):
+    """Contenido JSON para el historial de asistente.
+
+    Guarda SIEMPRE un objeto JSON con la respuesta publicada para que el
+    modelo vea su propio contrato de salida en el historial (refuerzo
+    defensivo del formato). `output` es el ModelOutput del turno; si no se
+    pasa, se usan los valores por defecto.
+    """
+    reply = answer if isinstance(answer, str) else ""
+    if output is None:
+        payload = {
+            "reply": reply,
+            "gif": "none",
+            "memory": "none",
+            "diary": "none",
+            "affinity_delta": 0,
+            "affinity_event": "none",
+            "date_decision": "continue",
+            "date_reason": "none",
+            "last_chance_result": "none",
+            "actions": [],
+        }
+    else:
+        payload = {
+            "reply": reply,
+            "gif": getattr(output, "gif", "none") or "none",
+            # memory/diary son acciones únicas, no contenido conversacional:
+            # no se revocan en el historial para no repetirlas por inercia.
+            "memory": "none",
+            "diary": "none",
+            "affinity_delta": int(getattr(output, "affinity_delta", 0) or 0),
+            "affinity_event": getattr(output, "affinity_event", "none") or "none",
+            "date_decision": getattr(output, "date_decision", "continue") or "continue",
+            "date_reason": getattr(output, "date_reason", "none") or "none",
+            "last_chance_result": (
+                getattr(output, "last_chance_result", "none") or "none"
+            ),
+            "actions": list(getattr(output, "actions", None) or []),
+        }
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def parse_actions(raw_actions):
     """Sanea las acciones propuestas por la IA (texto no fiable)."""
     if not isinstance(raw_actions, list):
@@ -244,9 +286,24 @@ RESPONSE_SCHEMA = {
                     "action": {"type": "string"},
                 },
                 "required": ["label", "action"],
+                "additionalProperties": False,
             },
         },
     },
-    "required": ["reply", "gif", "memory", "affinity_delta", "affinity_event"],
+    # Modo estricto (json_schema): TODAS las propiedades deben ir en `required`
+    # y `additionalProperties: false` en cada nivel. `parse_model_output` tolera
+    # claves ausentes, así que el esquema es válido también en modo clásico.
+    "required": [
+        "reply",
+        "gif",
+        "memory",
+        "diary",
+        "affinity_delta",
+        "affinity_event",
+        "date_decision",
+        "date_reason",
+        "last_chance_result",
+        "actions",
+    ],
     "additionalProperties": False,
 }

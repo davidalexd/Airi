@@ -24,8 +24,13 @@ class LLMClient(Protocol):
         schema: dict | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        disable_thinking: bool = False,
+        strict_schema: bool = False,
     ) -> str:
-        """Devuelve el texto de la respuesta del modelo."""
+        """Devuelve el texto de la respuesta del modelo.
+
+        `disable_thinking` desactiva el razonamiento del modelo si lo soporta.
+        """
         ...
 
     async def chat_with_meta(
@@ -35,6 +40,8 @@ class LLMClient(Protocol):
         schema: dict | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        disable_thinking: bool = False,
+        strict_schema: bool = False,
     ) -> tuple[str, LLMMeta]:
         """Igual que `chat` pero además devuelve los metadatos del turno."""
         ...

@@ -61,6 +61,11 @@ def remove_repeated_previous_reply(answer, history):
         ),
         "",
     )
+    # Desde que el historial guarda JSON, hay que extraer el "reply" interior.
+    # (Import local: llm_output importa este módulo, evitamos ciclo.)
+    from airi.domain.llm_output import extract_reply_field
+
+    previous = extract_reply_field(previous) or previous
     previous = clean_reply(previous)
     current = clean_reply(answer)
     if previous and current.startswith(previous):
